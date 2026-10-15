@@ -8,7 +8,7 @@
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
                 Roboto, sans-serif;
-            max-width: 560px;
+            max-width: 600px;
             margin: 40px auto;
             padding: 20px;
             text-align: center;
@@ -21,29 +21,60 @@
             border-radius: 12px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
         }
+        button, select, input {
+            font: inherit;
+            border-radius: 8px;
+            padding: 11px 14px;
+        }
         button {
             background: #0071e3;
             color: white;
             border: none;
-            padding: 12px 24px;
-            font-size: 16px;
-            border-radius: 8px;
             cursor: pointer;
-            font-weight: 500;
+            font-weight: 600;
         }
         button:hover {
             background: #005bb5;
         }
+        button:disabled {
+            opacity: 0.6;
+            cursor: wait;
+        }
+        select, input {
+            border: 1px solid #ccc;
+            background: white;
+            color: #1d1d1f;
+            max-width: 100%;
+        }
+        .settings {
+            text-align: left;
+            margin: 24px 0;
+        }
+        .settings label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        .settings select,
+        .settings input {
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .field {
+            margin-top: 18px;
+        }
+        .hint {
+            color: #68686e;
+            font-size: 13px;
+            line-height: 1.5;
+            margin-top: 8px;
+        }
         .metric {
-            font-size: 24px;
+            font-size: 30px;
             font-weight: bold;
             color: #0071e3;
-            margin: 12px 0 20px;
+            margin: 12px 0 24px;
             overflow-wrap: anywhere;
-        }
-        .info {
-            font-size: 14px;
-            color: #68686e;
         }
         .results {
             margin-top: 24px;
@@ -61,11 +92,24 @@
             text-align: right;
             overflow-wrap: anywhere;
         }
+        .section-title {
+            margin-top: 28px;
+            text-align: left;
+            font-size: 17px;
+        }
         .note {
             margin-top: 20px;
             font-size: 13px;
-            line-height: 1.5;
+            line-height: 1.6;
             color: #68686e;
+        }
+        #status {
+            margin-top: 16px;
+            font-size: 14px;
+            color: #68686e;
+        }
+        [hidden] {
+            display: none !important;
         }
     </style>
 </head>
@@ -73,17 +117,70 @@
     <div class="card">
         <h2>Audio Output Latency Detector</h2>
 
-        <p class="info">
-            Measure the estimated audio latency reported by your browser.
+        <p class="hint">
+            Select an AudioContext latency hint, then measure the
+            latency values reported by your browser.
         </p>
+
+        <div class="settings">
+            <div class="field">
+                <label for="latencyHintSelect">Latency Hint</label>
+
+                <select id="latencyHintSelect">
+                    <option value="default" selected>
+                        Default (browser default)
+                    </option>
+                    <option value="interactive">Interactive</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="playback">Playback</option>
+                    <option value="custom">Custom (milliseconds)</option>
+                </select>
+
+                <p class="hint">
+                    Default lets the browser choose its own settings.
+                    Interactive prioritizes low latency.
+                    Balanced is a compromise between latency and power use.
+                    Playback prioritizes power efficiency.
+                </p>
+            </div>
+
+            <div class="field" id="customLatencyField" hidden>
+                <label for="customLatency">Custom Latency (ms)</label>
+
+                <input
+                    type="number"
+                    id="customLatency"
+                    min="1"
+                    max="10000"
+                    step="1"
+                    value="50"
+                />
+
+                <p class="hint">
+                    Enter the requested latency in milliseconds.
+                    The browser may use a different actual latency.
+                </p>
+            </div>
+        </div>
 
         <button id="startBtn">Start Audio Test</button>
 
+        <div id="status" role="status" aria-live="polite">
+            Ready to test.
+        </div>
+
         <div id="result" hidden>
-            <div class="info">Estimated Output Latency</div>
-            <div id="latencyValue" class="metric">Measuring...</div>
+            <h3 class="section-title">Latency Measurements</h3>
+
+            <div class="hint">Estimated Output Latency</div>
+            <div id="latencyValue" class="metric">—</div>
 
             <div class="results">
+                <div class="result-row">
+                    <span>Requested Latency Hint</span>
+                    <span id="requestedHint">—</span>
+                </div>
+
                 <div class="result-row">
                     <span>Base Latency</span>
                     <span id="baseLatency">—</span>
@@ -111,18 +208,27 @@
             </div>
 
             <p class="note">
-                These values are estimates reported by the browser.
-                They do not represent a direct measurement of total
-                physical audio latency.
+                These values are reported by the browser and are not
+                direct measurements of total physical audio latency.
+                The latency hint is a request, not a guarantee.
             </p>
         </div>
     </div>
 
     <script>
         const startBtn = document.getElementById("startBtn");
+        const hintSelect = document.getElementById("latencyHintSelect");
+        const customField = document.getElementById("customLatencyField");
+        const customInput = document.getElementById("customLatency");
         const resultDiv = document.getElementById("result");
+        const statusDiv = document.getElementById("status");
 
-        let audioCtx;
+        let audioCtx = null;
+        let isRunning = false;
+
+        hintSelect.addEventListener("change", () => {
+            customField.hidden = hintSelect.value !== "custom";
+        });
 
         function formatLatency(seconds) {
             if (!Number.isFinite(seconds)) {
@@ -132,23 +238,85 @@
             return `${(seconds * 1000).toFixed(2)} ms`;
         }
 
+        function displayValue(id, value) {
+            document.getElementById(id).textContent = value;
+        }
+
+        function getRequestedHint() {
+            if (hintSelect.value === "default") {
+                return undefined;
+            }
+
+            if (hintSelect.value === "custom") {
+                const milliseconds = Number(customInput.value);
+
+                if (
+                    !Number.isFinite(milliseconds) ||
+                    milliseconds <= 0 ||
+                    milliseconds > 10000
+                ) {
+                    throw new Error(
+                        "Enter a custom latency between 1 and 10000 ms."
+                    );
+                }
+
+                return milliseconds / 1000;
+            }
+
+            return hintSelect.value;
+        }
+
+        function formatHint(hint) {
+            if (typeof hint === "number") {
+                return `${(hint * 1000).toFixed(2)} ms (custom)`;
+            }
+
+            return hint;
+        }
+
         async function measureLatency() {
+            if (isRunning) {
+                return;
+            }
+
             const AudioContextClass =
                 window.AudioContext || window.webkitAudioContext;
 
             if (!AudioContextClass) {
-                alert("Web Audio API is not supported by this browser.");
+                statusDiv.textContent =
+                    "Error: Web Audio API is not supported.";
                 return;
             }
 
-            startBtn.disabled = true;
-            startBtn.textContent = "Measuring...";
-            resultDiv.hidden = false;
+            let requestedHint;
 
             try {
-                audioCtx = new AudioContextClass({
-                    latencyHint: "interactive"
-                });
+                requestedHint = getRequestedHint();
+            } catch (error) {
+                statusDiv.textContent = error.message;
+                return;
+            }
+
+            isRunning = true;
+            startBtn.disabled = true;
+            startBtn.textContent = "Measuring...";
+            hintSelect.disabled = true;
+            customInput.disabled = true;
+            statusDiv.textContent = "Initializing audio context...";
+            resultDiv.hidden = true;
+
+            try {
+                // Close the previous context before starting another test.
+                if (audioCtx && audioCtx.state !== "closed") {
+                    await audioCtx.close();
+                }
+
+                // Omit the latencyHint option entirely in default mode.
+                audioCtx = requestedHint === undefined
+                    ? new AudioContextClass()
+                    : new AudioContextClass({
+                        latencyHint: requestedHint
+                    });
 
                 if (audioCtx.state === "suspended") {
                     await audioCtx.resume();
@@ -157,9 +325,7 @@
                 // Allow the audio context to initialize.
                 await new Promise(resolve => setTimeout(resolve, 500));
 
-                // Read the browser-reported latency values.
                 const baseLatency = audioCtx.baseLatency;
-
                 const hasOutputLatency =
                     "outputLatency" in audioCtx;
 
@@ -167,26 +333,46 @@
                     ? audioCtx.outputLatency
                     : NaN;
 
-                document.getElementById("baseLatency").textContent =
-                    formatLatency(baseLatency);
+                displayValue(
+                    "requestedHint",
+                    requestedHint === undefined
+                        ? "Default (browser default)"
+                        : formatHint(requestedHint)
+                );
 
-                document.getElementById("outputLatency").textContent =
-                    formatLatency(outputLatency);
+                displayValue(
+                    "baseLatency",
+                    formatLatency(baseLatency)
+                );
 
-                document.getElementById("latencyValue").textContent =
-                    formatLatency(outputLatency);
+                displayValue(
+                    "outputLatency",
+                    formatLatency(outputLatency)
+                );
 
-                document.getElementById("sampleRate").textContent =
-                    `${audioCtx.sampleRate} Hz`;
+                displayValue(
+                    "latencyValue",
+                    formatLatency(outputLatency)
+                );
 
-                document.getElementById("contextState").textContent =
-                    audioCtx.state;
+                displayValue(
+                    "sampleRate",
+                    `${audioCtx.sampleRate} Hz`
+                );
 
-                document.getElementById("apiSupport").textContent =
-                    hasOutputLatency ? "Supported" : "Not supported";
+                displayValue("contextState", audioCtx.state);
+
+                displayValue(
+                    "apiSupport",
+                    hasOutputLatency ? "Supported" : "Not supported"
+                );
 
                 console.table({
                     browser: navigator.userAgent,
+                    requestedLatencyHint:
+                        requestedHint === undefined
+                            ? "Default (browser default)"
+                            : formatHint(requestedHint),
                     state: audioCtx.state,
                     sampleRate: audioCtx.sampleRate,
                     baseLatency: baseLatency,
@@ -194,14 +380,19 @@
                     hasOutputLatency: hasOutputLatency
                 });
 
-                startBtn.textContent = "Test Completed";
+                resultDiv.hidden = false;
+                statusDiv.textContent = "Test completed successfully.";
+                startBtn.textContent = "Run Test Again";
             } catch (error) {
                 console.error("Audio test failed:", error);
 
-                alert(`Audio test failed: ${error.message}`);
-
-                startBtn.disabled = false;
+                statusDiv.textContent = `Test failed: ${error.message}`;
                 startBtn.textContent = "Try Again";
+            } finally {
+                isRunning = false;
+                startBtn.disabled = false;
+                hintSelect.disabled = false;
+                customInput.disabled = false;
             }
         }
 
